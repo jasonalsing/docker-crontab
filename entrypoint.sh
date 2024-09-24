@@ -22,11 +22,10 @@ if [ -z "${DOCKER_HOST}" ] && [ -a "${DOCKER_PORT_2375_TCP}" ]; then
     export DOCKER_HOST="tcp://docker:2375"
 fi
 
-if [ "${LOG_FILE}" == "" ]; then
-    LOG_FILE=${LOG_DIR}/jobs.log
+create_logdir() {
     mkdir -p "${LOG_DIR}"
-    touch "${LOG_FILE}"
-fi
+    chown docker:docker "${LOG_DIR}"
+}
 
 normalize_config() {
     JSON_CONFIG={}
@@ -73,14 +72,21 @@ make_image_cmd() {
     ENVIRONMENT=$(echo "${1}" | jq -r 'select(.environment != null) | .environment | map("--env " + .) | join(" ")')
     EXPOSE=$(echo "${1}" | jq -r 'select(.expose != null) | .expose | map("--expose " + .) | join(" ")' )
     NAME=$(echo "${1}" | jq -r 'select(.name != null) | .name')
+    REMOVE=$(echo "${1}" | jq -r 'select(.remove != null) | .remove')
     NETWORKS=$(echo "${1}" | jq -r 'select(.networks != null) | .networks | map("--network " + .) | join(" ")')
     PORTS=$(echo "${1}" | jq -r 'select(.ports != null) | .ports | map("--publish " + .) | join(" ")')
     VOLUMES=$(echo "${1}" | jq -r 'select(.volumes != null) | .volumes | map("--volume " + .) | join(" ")')
+
+    REMOVE_CMD=''
+    if [ "${REMOVE}" == "true" ]; then
+        REMOVE_CMD='--rm'
+    fi
 
     if [ "${DOCKERARGS}" == "null" ]; then DOCKERARGS=; fi
     DOCKERARGS+=" "
     if [ -n "${ENVIRONMENT}" ]; then DOCKERARGS+="${ENVIRONMENT} "; fi
     if [ -n "${EXPOSE}" ]; then DOCKERARGS+="${EXPOSE} "; fi
+    if [ -n "${REMOVE_CMD}" ]; then DOCKERARGS+="${REMOVE_CMD} "; fi
     if [ -n "${NAME}" ]; then DOCKERARGS+="--name ${NAME} "; fi
     if [ -n "${NETWORKS}" ]; then DOCKERARGS+="${NETWORKS} "; fi
     if [ -n "${PORTS}" ]; then DOCKERARGS+="${PORTS} "; fi
@@ -170,7 +176,7 @@ parse_schedule() {
 
 function build_crontab() {
     rm -rf "${CRONTAB_FILE}"
-
+    create_logdir
     ONSTART=()
     while read -r i ; do
         KEY=$(jq -r .["$i"] "${CONFIG}")
@@ -207,7 +213,7 @@ function build_crontab() {
             echo "#\!/usr/bin/env bash"
             echo "set -e"
             echo ""
-            echo "echo \"start cron job __${SCRIPT_NAME}__\""
+            echo "echo \`date\` \"start cron job __${SCRIPT_NAME}__\""
             echo "${CRON_COMMAND}"
         }  > "${SCRIPT_PATH}"
 
@@ -225,12 +231,22 @@ function build_crontab() {
             done < <(echo "${KEY}" | jq -r '.trigger | keys[]')
         fi
 
-        echo "echo \"end cron job __${SCRIPT_NAME}__\"" >> "${SCRIPT_PATH}"
+        echo "echo \`date\` \"end cron job __${SCRIPT_NAME}__\"" >> "${SCRIPT_PATH}"
 
         if [ "${COMMENT}" != "null" ]; then
             echo "# ${COMMENT}" >> "${CRONTAB_FILE}"
         fi
-        echo "${SCHEDULE} ${SCRIPT_PATH}" >> "${CRONTAB_FILE}"
+
+        LOG_FILE=$(echo "${KEY}" | jq -r '.logfile')
+        if [ "${LOG_FILE}" != "null" ]; then
+            LOG_FILE=${LOG_DIR}/${LOG_FILE}
+            touch "${LOG_FILE}"
+            chown docker:docker "${LOG_FILE}"
+            echo "${SCHEDULE} ${SCRIPT_PATH} >> ${LOG_FILE} 2>&1" >> "${CRONTAB_FILE}"
+        else
+            echo "${SCHEDULE} ${SCRIPT_PATH}" >> "${CRONTAB_FILE}"
+        fi
+
 
         ONSTART_COMMAND=$(echo "${KEY}" | jq -r '.onstart')
         if [ "${ONSTART_COMMAND}" == "true" ]; then
