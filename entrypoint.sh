@@ -60,6 +60,10 @@ ensure_docker_socket_accessible() {
             # Docker socket belongs to 'root' group - add user 'docker' to this group.
             adduser docker root
         fi
+    else
+        ## we are down here if docker group exists. delete and recreate group? Latest docker image is auto-creating this group with different gid. 
+        delgroup docker
+        ensure_docker_socket_accessible
     fi
 }
 
@@ -72,21 +76,18 @@ make_image_cmd() {
     ENVIRONMENT=$(echo "${1}" | jq -r 'select(.environment != null) | .environment | map("--env " + .) | join(" ")')
     EXPOSE=$(echo "${1}" | jq -r 'select(.expose != null) | .expose | map("--expose " + .) | join(" ")' )
     NAME=$(echo "${1}" | jq -r 'select(.name != null) | .name')
+    # new flag for container removal after run
     REMOVE=$(echo "${1}" | jq -r 'select(.remove != null) | .remove')
     NETWORKS=$(echo "${1}" | jq -r 'select(.networks != null) | .networks | map("--network " + .) | join(" ")')
     PORTS=$(echo "${1}" | jq -r 'select(.ports != null) | .ports | map("--publish " + .) | join(" ")')
     VOLUMES=$(echo "${1}" | jq -r 'select(.volumes != null) | .volumes | map("--volume " + .) | join(" ")')
 
-    REMOVE_CMD=''
-    if [ "${REMOVE}" == "true" ]; then
-        REMOVE_CMD='--rm'
-    fi
 
     if [ "${DOCKERARGS}" == "null" ]; then DOCKERARGS=; fi
     DOCKERARGS+=" "
+    if [ "${REMOVE}" == "true" ]; then DOCKERARGS+="--rm "; fi
     if [ -n "${ENVIRONMENT}" ]; then DOCKERARGS+="${ENVIRONMENT} "; fi
     if [ -n "${EXPOSE}" ]; then DOCKERARGS+="${EXPOSE} "; fi
-    if [ -n "${REMOVE_CMD}" ]; then DOCKERARGS+="${REMOVE_CMD} "; fi
     if [ -n "${NAME}" ]; then DOCKERARGS+="--name ${NAME} "; fi
     if [ -n "${NETWORKS}" ]; then DOCKERARGS+="${NETWORKS} "; fi
     if [ -n "${PORTS}" ]; then DOCKERARGS+="${PORTS} "; fi
@@ -237,6 +238,7 @@ function build_crontab() {
             echo "# ${COMMENT}" >> "${CRONTAB_FILE}"
         fi
 
+        ## set logfile for each entry
         LOG_FILE=$(echo "${KEY}" | jq -r '.logfile')
         if [ "${LOG_FILE}" != "null" ]; then
             LOG_FILE=${LOG_DIR}/${LOG_FILE}
